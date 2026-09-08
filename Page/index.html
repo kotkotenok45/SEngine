@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SEngine</title>
+    <style>
+        body { font-family: system-ui, -apple-system, sans-serif; max-width: 650px; margin: 50px auto; padding: 0 20px; background: #fafafa; color: #222; }
+        .search-box { display: flex; gap: 10px; margin-bottom: 25px; }
+        input { flex: 1; padding: 14px; font-size: 16px; border: 1px solid #ccc; border-radius: 8px; outline: none; }
+        input:focus { border-color: #0070f3; }
+        button { padding: 14px 24px; font-size: 16px; background: #0070f3; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; }
+        button:hover { background: #0051a2; }
+        #results { margin-top: 20px; }
+        .item { padding: 18px; background: white; border: 1px solid #e1e4e8; border-radius: 8px; margin-bottom: 12px; box-shadow: 0 2px 5px rgba(0,0,0,0.02); }
+        .item a { font-size: 18px; color: #1a0dab; text-decoration: none; font-weight: 500; }
+        .item a:hover { text-decoration: underline; }
+        .url { color: #006621; font-size: 14px; display: block; margin-top: 4px; word-break: break-all; }
+        .dns-info { color: #137333; font-size: 12px; margin-top: 8px; background: #e6f4ea; padding: 6px 10px; border-radius: 4px; font-family: monospace; display: inline-block; font-weight: bold; }
+        .loader { color: #666; font-size: 15px; line-height: 1.6; }
+    </style>
+</head>
+<body>
+
+    <h2>🔍 SEngine</h2>
+    
+    <div class="search-box">
+        <input type="text" id="query" placeholder="Введите поисковый запрос...">
+        <button onclick="startSearch()">Найти</button>
+    </div>
+    
+    <div id="results"></div>
+
+    <script>
+        // ⚠️ ЗАМЕНИТЕ ЭТУ ССЫЛКУ НА URL ВАШЕГО РАЗВЕРНУТОГО CLOUDFLARE WORKER!
+        const WORKER_URL = 'https://workers.dev';
+
+        async function startSearch() {
+            const q = document.getElementById('query').value.trim();
+            const resContainer = document.getElementById('results');
+            
+            if(!q) return;
+            resContainer.innerHTML = '<div class="loader">Поиск результатов...</div>';
+
+            try {
+                const response = await fetch(`${WORKER_URL}?q=${encodeURIComponent(q)}`);
+                const data = await response.json();
+
+                resContainer.innerHTML = '';
+                if(data.length === 0) {
+                    resContainer.innerHTML = '<p>Ничего не найдено.</p>';
+                    return;
+                }
+
+                data.forEach(item => {
+                    resContainer.innerHTML += `
+                        <div class="item">
+                            <a href="${item.url}" target="_blank">${escapeHtml(item.title)}</a>
+                            <span class="url">${item.url}</span>
+                            <div class="dns-info">✓ DNS Активен | IP: ${item.ip}</div>
+                        </div>
+                    `;
+                });
+            } catch (err) {
+                resContainer.innerHTML = '<span style="color:red;">Ошибка подключения к серверу SEngine. Проверьте адрес WORKER_URL.</span>';
+                console.error(err);
+            }
+        }
+
+        function escapeHtml(str) {
+            return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        }
+
+        document.getElementById('query').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') startSearch();
+        });
+    </script>
+</body>
+</html>
