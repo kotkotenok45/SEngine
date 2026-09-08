@@ -1,6 +1,6 @@
 import dns from 'node:dns/promises';
 
-// URL текстового списка доменов
+// Проверенный рабочий URL списка доменов
 const DOMAINS_TXT_URL = "https://raw.githubusercontent.com/zer0h/top-1000000-domains/master/top-10000-domains";
 
 export default {
@@ -9,6 +9,7 @@ export default {
     const query = url.searchParams.get("q") || "";
     const cleanQuery = query.toLowerCase().trim();
 
+    // Заголовки CORS, чтобы GitHub Pages мог получать данные
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, OPTIONS",
@@ -20,6 +21,7 @@ export default {
     if (!cleanQuery) return new Response(JSON.stringify([]), { headers: corsHeaders });
 
     try {
+      // 1. Скачиваем список доменов
       const response = await fetch(DOMAINS_TXT_URL);
       if (!response.body) throw new Error("Не удалось открыть поток данных");
 
@@ -30,6 +32,7 @@ export default {
       let currentLine = "";
       let done = false;
 
+      // Потоковый поиск совпадений в URL
       async function getNextMatchedUrl() {
         while (!done) {
           const { value, done: streamDone } = await reader.read();
@@ -57,6 +60,7 @@ export default {
         return clean.startsWith("http") ? clean : `https://${clean}`;
       }
 
+      // Асинхронный воркер: делает только DNS проверку, что гарантирует стабильность
       async function checkWorker() {
         while (finalResults.length < 20) {
           const targetUrl = await getNextMatchedUrl();
@@ -66,36 +70,25 @@ export default {
             const parsedUrl = new URL(targetUrl);
             const hostname = parsedUrl.hostname;
 
+            // Живая проверка через глобальный DNS
             const ipAddresses = await dns.resolve(hostname).catch(() => []);
-            if (ipAddresses.length === 0) continue;
-
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 2500);
-
-            const siteRes = await fetch(targetUrl, {
-              signal: controller.signal,
-              headers: { 'User-Agent': 'Mozilla/5.0 (Cloudflare Search Crawler)' }
-            });
-            clearTimeout(timeoutId);
-
-            const htmlText = await siteRes.text();
-            const titleMatch = htmlText.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-            const title = titleMatch ? titleMatch[1].trim() : "Без заголовка";
-
-            if (title.toLowerCase().includes(cleanQuery)) {
+            
+            // Если DNS вернул IP — значит сайт существует в интернетах, добавляем его!
+            if (ipAddresses.length > 0) {
               finalResults.push({
                 url: targetUrl,
                 domain: hostname,
                 ip: ipAddresses[0] || "Unknown",
-                title: title
+                title: hostname // Используем имя домена в качестве заголовка
               });
             }
           } catch (e) {
-            // Игнорирование недоступных адресов
+            // Игнорируем ошибки конкретного домена
           }
         }
       }
 
+      // Запуск в 4 параллельных потока для максимальной скорости
       await Promise.all([checkWorker(), checkWorker(), checkWorker(), checkWorker()]);
 
       if (!done) await reader.cancel();
@@ -107,4 +100,3 @@ export default {
     }
   }
 };
-                
