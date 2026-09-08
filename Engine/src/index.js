@@ -1,7 +1,6 @@
 import dns from 'node:dns/promises';
 
-// Проверенный рабочий URL списка доменов
-const DOMAINS_TXT_URL = "https://raw.githubusercontent.com/zer0h/top-1000000-domains/master/top-10000-domains";
+const DOMAINS_TXT_URL = "https://githubusercontent.com";
 
 export default {
   async fetch(request) {
@@ -9,7 +8,6 @@ export default {
     const query = url.searchParams.get("q") || "";
     const cleanQuery = query.toLowerCase().trim();
 
-    // Заголовки CORS, чтобы GitHub Pages мог получать данные
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, OPTIONS",
@@ -20,11 +18,24 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
     if (!cleanQuery) return new Response(JSON.stringify([]), { headers: corsHeaders });
 
+    let response;
     try {
-      // 1. Скачиваем список доменов
-      const response = await fetch(DOMAINS_TXT_URL);
-      if (!response.body) throw new Error("Не удалось открыть поток данных");
+      // ЭТАП 1: Скачивание текстовой БД доменов
+      response = await fetch(DOMAINS_TXT_URL);
+    } catch (fetchErr) {
+      return new Response(JSON.stringify({ 
+        error: "ОШИБКА БАЗЫ ДАННЫХ: Не удалось скачать файл доменов с GitHub. Проверьте интернет-соединение воркера или доступность URL.",
+        details: fetchErr.message 
+      }), { headers: corsHeaders, status: 500 });
+    }
 
+    if (!response.ok) {
+      return new Response(JSON.stringify({ 
+        error: `ОШИБКА БАЗЫ ДАННЫХ: Сервер GitHub вернул статус ${response.status} вместо файла доменов.`
+      }), { headers: corsHeaders, status: 500 });
+    }
+
+    try {
       const reader = response.body.getReader();
       const decoder = new TextDecoder("utf-8");
       
@@ -32,7 +43,6 @@ export default {
       let currentLine = "";
       let done = false;
 
-      // Потоковый поиск совпадений в URL
       async function getNextMatchedUrl() {
         while (!done) {
           const { value, done: streamDone } = await reader.read();
@@ -60,7 +70,7 @@ export default {
         return clean.startsWith("http") ? clean : `https://${clean}`;
       }
 
-      // Асинхронный воркер: делает только DNS проверку, что гарантирует стабильность
+      // ЭТАП 2: Работа асинхронного DNS конвейера
       async function checkWorker() {
         while (finalResults.length < 20) {
           const targetUrl = await getNextMatchedUrl();
@@ -70,25 +80,35 @@ export default {
             const parsedUrl = new URL(targetUrl);
             const hostname = parsedUrl.hostname;
 
-            // Живая проверка через глобальный DNS
-            const ipAddresses = await dns.resolve(hostname).catch(() => []);
+            // Проверка работоспособности DNS модуля
+            let ipAddresses = [];
+            try {
+              ipAddresses = await dns.resolve(hostname);
+            } catch (dnsErr) {
+              // Если это системная ошибка самого воркера (модуль не поддерживается)
+              if (dnsErr.message.includes("not implemented") || dnsErr.message.includes("undefined")) {
+                throw new Error(`ОШИБКА ОКРУЖЕНИЯ WORKER: Модуль 'node:dns' заблокирован или не поддерживается. Проверьте наличие флага 'nodejs_compat' в wrangler.json. Внутренний текст: ${dnsErr.message}`);
+              }
+              // Обычные ошибки ненайденных доменов (NXDOMAIN) просто пропускаем
+              continue;
+            }
             
-            // Если DNS вернул IP — значит сайт существует в интернетах, добавляем его!
             if (ipAddresses.length > 0) {
               finalResults.push({
                 url: targetUrl,
                 domain: hostname,
                 ip: ipAddresses[0] || "Unknown",
-                title: hostname // Используем имя домена в качестве заголовка
+                title: hostname
               });
             }
           } catch (e) {
-            // Игнорируем ошибки конкретного домена
+            // Передаем критическую ошибку модуля наверх, остальные гасим
+            if (e.message.includes("ОШИБКА ОКРУЖЕНИЯ WORKER")) throw e;
           }
         }
       }
 
-      // Запуск в 4 параллельных потока для максимальной скорости
+      // Запуск 4 параллельных потоков
       await Promise.all([checkWorker(), checkWorker(), checkWorker(), checkWorker()]);
 
       if (!done) await reader.cancel();
@@ -96,7 +116,11 @@ export default {
       return new Response(JSON.stringify(finalResults), { headers: corsHeaders });
 
     } catch (err) {
-      return new Response(JSON.stringify({ error: err.message }), { headers: corsHeaders, status: 500 });
+      // Сюда прилетают ошибки парсинга или падения критических модулей воркера
+      return new Response(JSON.stringify({ 
+        error: "ОШИБКА ВНУТРЕННЕЙ ЛОГИКИ WORKER (Критический сбой кода)", 
+        details: err.message 
+      }), { headers: corsHeaders, status: 500 });
     }
   }
 };
