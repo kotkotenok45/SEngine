@@ -20,18 +20,17 @@ export default {
 
     let response;
     try {
-      // ЭТАП 1: Скачивание текстовой БД доменов
       response = await fetch(DOMAINS_TXT_URL);
     } catch (fetchErr) {
       return new Response(JSON.stringify({ 
-        error: "ОШИБКА БАЗЫ ДАННЫХ: Не удалось скачать файл доменов с GitHub. Проверьте интернет-соединение воркера или доступность URL.",
+        error: "ОШИБКА БАЗЫ ДАННЫХ: Не удалось скачать файл доменов с GitHub.",
         details: fetchErr.message 
       }), { headers: corsHeaders, status: 500 });
     }
 
     if (!response.ok) {
       return new Response(JSON.stringify({ 
-        error: `ОШИБКА БАЗЫ ДАННЫХ: Сервер GitHub вернул статус ${response.status} вместо файла доменов.`
+        error: `ОШИБКА БАЗЫ ДАННЫХ: Сервер GitHub вернул статус ${response.status}`
       }), { headers: corsHeaders, status: 500 });
     }
 
@@ -43,12 +42,17 @@ export default {
       let currentLine = "";
       let done = false;
 
-      async function getNextMatchedUrl() {
-        while (!done) {
+      // ОДИН СТРОГИЙ ПОТОК ДЛЯ ЧТЕНИЯ: Никаких конфликтов
+      async function getNextMatchedUrlsBatch(batchSize = 20) {
+        let matchedBatch = [];
+        
+        while (!done && matchedBatch.length < batchSize) {
           const { value, done: streamDone } = await reader.read();
           if (streamDone) {
             done = true;
-            if (currentLine.toLowerCase().includes(cleanQuery)) return formatUrl(currentLine);
+            if (currentLine.toLowerCase().includes(cleanQuery)) {
+              matchedBatch.push(formatUrl(currentLine));
+            }
             break;
           }
 
@@ -58,11 +62,12 @@ export default {
 
           for (const line of lines) {
             if (line.toLowerCase().includes(cleanQuery)) {
-              return formatUrl(line);
+              matchedBatch.push(formatUrl(line));
+              if (matchedBatch.length >= batchSize) break;
             }
           }
         }
-        return null;
+        return matchedBatch;
       }
 
       function formatUrl(line) {
@@ -70,55 +75,54 @@ export default {
         return clean.startsWith("http") ? clean : `https://${clean}`;
       }
 
-      // ЭТАП 2: Работа асинхронного DNS конвейера
-      async function checkWorker() {
-        while (finalResults.length < 20) {
-          const targetUrl = await getNextMatchedUrl();
-          if (!targetUrl) break;
+      // Находим первую порцию совпадений по URL
+      const candidateUrls = await getNextMatchedUrlsBatch(40);
 
-          try {
-            const parsedUrl = new URL(targetUrl);
-            const hostname = parsedUrl.hostname;
+      // ПАРАЛЛЕЛЬНАЯ ПРОВЕРКА DNS: Запускаем до 4 проверок одновременно без конфликтов потока
+      const checkDomainDns = async (targetUrl) => {
+        try {
+          const parsedUrl = new URL(targetUrl);
+          const hostname = parsedUrl.hostname;
 
-            // Проверка работоспособности DNS модуля
-            let ipAddresses = [];
-            try {
-              ipAddresses = await dns.resolve(hostname);
-            } catch (dnsErr) {
-              // Если это системная ошибка самого воркера (модуль не поддерживается)
-              if (dnsErr.message.includes("not implemented") || dnsErr.message.includes("undefined")) {
-                throw new Error(`ОШИБКА ОКРУЖЕНИЯ WORKER: Модуль 'node:dns' заблокирован или не поддерживается. Проверьте наличие флага 'nodejs_compat' в wrangler.json. Внутренний текст: ${dnsErr.message}`);
-              }
-              // Обычные ошибки ненайденных доменов (NXDOMAIN) просто пропускаем
-              continue;
-            }
-            
-            if (ipAddresses.length > 0) {
-              finalResults.push({
-                url: targetUrl,
-                domain: hostname,
-                ip: ipAddresses[0] || "Unknown",
-                title: hostname
-              });
-            }
-          } catch (e) {
-            // Передаем критическую ошибку модуля наверх, остальные гасим
-            if (e.message.includes("ОШИБКА ОКРУЖЕНИЯ WORKER")) throw e;
+          const ipAddresses = await dns.resolve(hostname).catch(() => []);
+          if (ipAddresses.length > 0) {
+            return {
+              url: targetUrl,
+              domain: hostname,
+              ip: ipAddresses[0] || "Unknown",
+              title: hostname
+            };
+          }
+        } catch (e) {
+          // Игнорируем ошибки парсинга/недоступности доменов
+        }
+        return null;
+      };
+
+      // Пул запущенных параллельных задач
+      const concurrencyLimit = 4;
+      for (let i = 0; i < candidateUrls.length; i += concurrencyLimit) {
+        if (finalResults.length >= 20) break;
+        
+        const chunk = candidateUrls.slice(i, i + concurrencyLimit);
+        const chunkPromises = chunk.map(url => checkDomainDns(url));
+        const chunkResults = await Promise.all(chunkPromises);
+
+        for (const res of chunkResults) {
+          if (res && finalResults.length < 20) {
+            finalResults.push(res);
           }
         }
       }
 
-      // Запуск 4 параллельных потоков
-      await Promise.all([checkWorker(), checkWorker(), checkWorker(), checkWorker()]);
-
+      // Закрываем чтение, если вышли досрочно
       if (!done) await reader.cancel();
 
       return new Response(JSON.stringify(finalResults), { headers: corsHeaders });
 
     } catch (err) {
-      // Сюда прилетают ошибки парсинга или падения критических модулей воркера
       return new Response(JSON.stringify({ 
-        error: "ОШИБКА ВНУТРЕННЕЙ ЛОГИКИ WORKER (Критический сбой кода)", 
+        error: "ОШИБКА ВНУТРЕННЕЙ ЛОГИКИ WORKER", 
         details: err.message 
       }), { headers: corsHeaders, status: 500 });
     }
