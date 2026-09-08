@@ -1,7 +1,7 @@
 import dns from 'node:dns/promises';
 
 // URL текстового списка доменов
-const DOMAINS_TXT_URL = "https://githubusercontent.com";
+const DOMAINS_TXT_URL = "https://raw.githubusercontent.com/zer0h/top-1000000-domains/master/top-10000-domains";
 
 export default {
   async fetch(request) {
