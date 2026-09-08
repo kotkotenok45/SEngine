@@ -1,0 +1,8 @@
+{
+  "name": "sengine-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  }
+}
