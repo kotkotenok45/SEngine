@@ -18,6 +18,8 @@
         .url { color: #006621; font-size: 14px; display: block; margin-top: 4px; word-break: break-all; }
         .dns-info { color: #137333; font-size: 12px; margin-top: 8px; background: #e6f4ea; padding: 6px 10px; border-radius: 4px; font-family: monospace; display: inline-block; font-weight: bold; }
         .loader { color: #666; font-size: 15px; line-height: 1.6; }
+        .error-block { border: 1px solid #f5c6cb; background-color: #f8d7da; color: #721c24; padding: 15px; border-radius: 8px; margin-top: 15px; font-size: 15px; line-height: 1.5; }
+        .error-details { font-family: monospace; background: rgba(0,0,0,0.05); padding: 8px; margin-top: 8px; border-radius: 4px; font-size: 13px; display: block; word-break: break-all; }
     </style>
 </head>
 <body>
@@ -40,11 +42,23 @@
             const resContainer = document.getElementById('results');
             
             if(!q) return;
-            resContainer.innerHTML = '<div class="loader">Поиск результатов...</div>';
+            resContainer.innerHTML = '<div class="loader">Отправка запроса на сервер SEngine и обработка...</div>';
 
             try {
                 const response = await fetch(`${WORKER_URL}?q=${encodeURIComponent(q)}`);
                 const data = await response.json();
+
+                // Проверяем, вернул ли бэкенд ошибку в JSON формате
+                if (data && data.error) {
+                    resContainer.innerHTML = `
+                        <div class="error-block">
+                            <strong>🔴 Произошла ошибка на стороне бэкенда Cloudflare:</strong><br>
+                            ${data.error}
+                            ${data.details ? `<span class="error-details">Детали от сервера: ${data.details}</span>` : ''}
+                        </div>
+                    `;
+                    return;
+                }
 
                 resContainer.innerHTML = '';
                 if(data.length === 0) {
@@ -62,7 +76,15 @@
                     `;
                 });
             } catch (err) {
-                resContainer.innerHTML = '<span style="color:red;">Ошибка подключения к серверу SEngine. Проверьте адрес WORKER_URL.</span>';
+                // Ошибка самого браузера (блокировка CORS, отсутствие интернета на ПК, неверный URL воркера)
+                resContainer.innerHTML = `
+                    <div class="error-block">
+                        <strong>❌ КРИТИЧЕСКАЯ ОШИБКА ПОДКЛЮЧЕНИЯ (Сеть/Браузер):</strong><br>
+                        Браузер не смог достучаться до воркера по адресу <span style="font-family:monospace;">${WORKER_URL}</span>.<br>
+                        Возможные причины: неверный адрес в WORKER_URL, воркер удален/заблокирован, либо ваш локальный интернет блокирует запросы к Cloudflare.
+                        <span class="error-details">Ошибка JavaScript: ${err.message}</span>
+                    </div>
+                `;
                 console.error(err);
             }
         }
