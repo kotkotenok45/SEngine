@@ -6,7 +6,6 @@ export default {
   async fetch(request) {
     const url = new URL(request.url);
     const query = url.searchParams.get("q") || "";
-    // Приводим запрос к нижнему регистру и убираем пробелы
     const cleanQuery = query.toLowerCase().trim();
 
     const corsHeaders = {
@@ -37,7 +36,6 @@ export default {
       let currentLine = "";
       let done = false;
 
-      // Безопасное чтение потока с приведением к регистру
       async function getNextMatchedUrlsBatch(batchSize = 40) {
         let matchedBatch = [];
         
@@ -45,7 +43,6 @@ export default {
           const { value, done: streamDone } = await reader.read();
           if (streamDone) {
             done = true;
-            // Проверяем последний хвостик файла
             const finalClean = currentLine.replace(/\r/g, "").trim();
             if (finalClean.toLowerCase().includes(cleanQuery) && finalClean.length > 0) {
               matchedBatch.push(formatUrl(finalClean));
@@ -58,7 +55,6 @@ export default {
           currentLine = lines.pop() || "";
 
           for (const line of lines) {
-            // Очищаем от невидимых символов \r (Windows переносы строк)
             const cleanLine = line.replace(/\r/g, "").trim();
             if (cleanLine.toLowerCase().includes(cleanQuery) && cleanLine.length > 0) {
               matchedBatch.push(formatUrl(cleanLine));
@@ -69,14 +65,13 @@ export default {
         return matchedBatch;
       }
 
-      // Жесткая очистка URL от мусора и CSV-запятых
       function formatUrl(line) {
+        // Безопасное разделение: если запятых нет (как в нашем TXT), берется вся строка целиком
         const parts = line.split(",");
-        const clean = parts[parts.length - 1].trim() || parts[0].trim();
+        const clean = (parts[parts.length - 1] || line).trim();
         return clean.startsWith("http") ? clean : `https://${clean}`;
       }
 
-      // Получаем порцию доменов
       const candidateUrls = await getNextMatchedUrlsBatch(40);
 
       const checkDomainDns = async (targetUrl) => {
@@ -99,7 +94,6 @@ export default {
         return null;
       };
 
-      // Пробиваем их через DNS в 4 параллельных потока
       const concurrencyLimit = 4;
       for (let i = 0; i < candidateUrls.length; i += concurrencyLimit) {
         if (finalResults.length >= 20) break;
@@ -127,3 +121,4 @@ export default {
     }
   }
 };
+      
