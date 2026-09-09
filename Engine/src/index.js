@@ -1,6 +1,6 @@
 import dns from 'node:dns/promises';
 
-const DOMAINS_TXT_URL = "https://raw.githubusercontent.com/zer0h/top-1000000-domains/master/top-10000-domains";
+const DOMAINS_TXT_URL = "https://githubusercontent.com";
 
 export default {
   async fetch(request) {
@@ -121,4 +121,3 @@ export default {
     }
   }
 };
-      
