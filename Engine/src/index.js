@@ -6,6 +6,7 @@ export default {
   async fetch(request) {
     const url = new URL(request.url);
     const query = url.searchParams.get("q") || "";
+    // Приводим запрос к нижнему регистру и убираем пробелы
     const cleanQuery = query.toLowerCase().trim();
 
     const corsHeaders = {
@@ -28,12 +29,6 @@ export default {
       }), { headers: corsHeaders, status: 500 });
     }
 
-    if (!response.ok) {
-      return new Response(JSON.stringify({ 
-        error: `ОШИБКА БАЗЫ ДАННЫХ: Сервер GitHub вернул статус ${response.status}`
-      }), { headers: corsHeaders, status: 500 });
-    }
-
     try {
       const reader = response.body.getReader();
       const decoder = new TextDecoder("utf-8");
@@ -42,16 +37,18 @@ export default {
       let currentLine = "";
       let done = false;
 
-      // ОДИН СТРОГИЙ ПОТОК ДЛЯ ЧТЕНИЯ: Никаких конфликтов
-      async function getNextMatchedUrlsBatch(batchSize = 20) {
+      // Безопасное чтение потока с приведением к регистру
+      async function getNextMatchedUrlsBatch(batchSize = 40) {
         let matchedBatch = [];
         
         while (!done && matchedBatch.length < batchSize) {
           const { value, done: streamDone } = await reader.read();
           if (streamDone) {
             done = true;
-            if (currentLine.toLowerCase().includes(cleanQuery)) {
-              matchedBatch.push(formatUrl(currentLine));
+            // Проверяем последний хвостик файла
+            const finalClean = currentLine.replace(/\r/g, "").trim();
+            if (finalClean.toLowerCase().includes(cleanQuery) && finalClean.length > 0) {
+              matchedBatch.push(formatUrl(finalClean));
             }
             break;
           }
@@ -61,8 +58,10 @@ export default {
           currentLine = lines.pop() || "";
 
           for (const line of lines) {
-            if (line.toLowerCase().includes(cleanQuery)) {
-              matchedBatch.push(formatUrl(line));
+            // Очищаем от невидимых символов \r (Windows переносы строк)
+            const cleanLine = line.replace(/\r/g, "").trim();
+            if (cleanLine.toLowerCase().includes(cleanQuery) && cleanLine.length > 0) {
+              matchedBatch.push(formatUrl(cleanLine));
               if (matchedBatch.length >= batchSize) break;
             }
           }
@@ -70,15 +69,16 @@ export default {
         return matchedBatch;
       }
 
+      // Жесткая очистка URL от мусора и CSV-запятых
       function formatUrl(line) {
-        const clean = line.split(",")[0].trim();
+        const parts = line.split(",");
+        const clean = parts[parts.length - 1].trim() || parts[0].trim();
         return clean.startsWith("http") ? clean : `https://${clean}`;
       }
 
-      // Находим первую порцию совпадений по URL
+      // Получаем порцию доменов
       const candidateUrls = await getNextMatchedUrlsBatch(40);
 
-      // ПАРАЛЛЕЛЬНАЯ ПРОВЕРКА DNS: Запускаем до 4 проверок одновременно без конфликтов потока
       const checkDomainDns = async (targetUrl) => {
         try {
           const parsedUrl = new URL(targetUrl);
@@ -94,12 +94,12 @@ export default {
             };
           }
         } catch (e) {
-          // Игнорируем ошибки парсинга/недоступности доменов
+          // Игнорируем ошибки конкретных сайтов
         }
         return null;
       };
 
-      // Пул запущенных параллельных задач
+      // Пробиваем их через DNS в 4 параллельных потока
       const concurrencyLimit = 4;
       for (let i = 0; i < candidateUrls.length; i += concurrencyLimit) {
         if (finalResults.length >= 20) break;
@@ -115,7 +115,6 @@ export default {
         }
       }
 
-      // Закрываем чтение, если вышли досрочно
       if (!done) await reader.cancel();
 
       return new Response(JSON.stringify(finalResults), { headers: corsHeaders });
